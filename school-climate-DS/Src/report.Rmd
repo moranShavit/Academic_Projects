@@ -1,0 +1,549 @@
+---
+title: "report"
+output: html_document
+date: "2025-06-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(knitr)
+library(tidyverse)
+library(broom)
+library(htmltools)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(ggcorrplot)
+library(Metrics)
+library(reshape2)
+library(rsample)
+library(tidymodels)
+```
+Data Loading and Preprocessing:
+
+This section loads three datasets related to school background, test results, and student-reported atmosphere. It performs several preprocessing steps:
+
+  Combines socio-economic indicators into a single socio_economy variable.
+  
+  Merges student test results with background and atmosphere data.
+  
+  Reshapes student response data (where var_id starts with "T") into a wide format for analysis.
+  
+  Filters out columns with too many missing values (less than 80% completeness).
+  
+  Focuses the dataset on Math subject results only.
+
+```{r}
+background_df = read.csv("data\\school_background_info.csv", fileEncoding = "Windows-1255")
+results_df = read.csv("data\\school_results.csv", fileEncoding = "Windows-1255")
+atmosphere_df = read.csv("data\\school_temperament.csv", fileEncoding = "Windows-1255")
+
+# Step 1: Create socio_economy variable by filling missing values
+background_df <- background_df %>%
+  mutate(socio_economy = coalesce(ses_mosad_cat_yh, ses_mosad_cat_e))
+
+# Step 2: Merge results with background data on 'semel_mosad'
+merged_df <- results_df %>%
+  inner_join(background_df, by = "semel_mosad")
+
+# Step 3: Filter atmosphere_df to rows where var_id starts with "T", T = students answers
+df_T_only <- atmosphere_df %>%
+  filter(str_starts(var_id, "T"))
+
+# Step 4: Pivot to wide format: each var_id becomes a column, with values filled in
+students_df <- df_T_only %>%
+  pivot_wider(
+    id_cols = c(year, semel_mosad),
+    names_from = var_id,
+    values_from = value,
+    values_fn = mean 
+  )
+
+
+# Step 5: Merge students_df into merged_df on year and semel_mosad
+merged_df <- merged_df %>%
+  inner_join(students_df, by = c("year", "semel_mosad"))
+
+# Step 6: Keep only columns with more than 80% non-null values
+non_null_counts <- colSums(!is.na(merged_df))
+columns_to_keep <- names(non_null_counts[non_null_counts / nrow(merged_df) > 0.8])
+
+# Step 9: Filter merged_df to include only those columns
+filtered_df <- merged_df[, columns_to_keep]
+filtered_df = filtered_df %>% select(-c("ses_mosad_cat_e", "ses_mosad_cat_yh"))
+clean_df <- filtered_df %>% drop_na()
+
+# Filter data for Math subject only
+math_df <- clean_df %>% filter(subject_id == "M")
+
+# Convert score column to numeric (in case it's character or factor)
+math_df <- math_df %>%
+  mutate(score = as.numeric(score))
+
+# Keep only numeric columns and rows with non-missing score
+numeric_df <- math_df %>%
+  select(where(is.numeric)) %>%
+  filter(!is.na(score))
+```
+
+```{r}
+# Analyze the relationship between school loyalty and math score,
+# segmented by socioeconomic status. Calculates group means and 
+# visualizes trends using faceted scatter plots with confidence intervals.
+
+# Clean the 'score' column: remove whitespace and convert to numeric
+clean_df <- clean_df %>%
+  mutate(
+    score = as.numeric(trimws(score))  # remove spaces and convert to numeric
+  )
+
+# Group by School Loyalty (T_1005_Rd) and Socioeconomic group, then calculate mean score
+loyalty_score_summary <- clean_df %>%
+  filter(!is.na(T_1005_Rd), !is.na(score)) %>%
+  group_by(T_1005_Rd, socio_economy) %>%
+  summarise(mean_score = mean(score), .groups = "drop") %>%
+  arrange(T_1005_Rd)
+
+# Define readable labels
+socio_labels <- c(
+  "1" = "High Socioeconomic",
+  "2" = "Medium Socioeconomic",
+  "3" = "Low Socioeconomic"
+)
+
+# Add a column with labeled socioeconomic group for faceting
+loyalty_score_summary <- loyalty_score_summary %>%
+  mutate(
+    socio_label = socio_labels[as.character(socio_economy)],
+    socio_label = factor(socio_label, levels = c(
+      "High Socioeconomic",
+      "Medium Socioeconomic",
+      "Low Socioeconomic"
+    ))
+  )
+
+
+# Plot the relationship between School Loyalty and Mean Math Score, faceted by socioeconomic group
+ggplot(loyalty_score_summary, aes(x = T_1005_Rd, y = mean_score)) +
+  geom_point(alpha = 0.6, color = "steelblue") +
+  geom_smooth(method = "lm", se = TRUE, color = "darkred") +
+  facet_wrap(~ socio_label, scales = "fixed") +
+  labs(
+    title = "Relationship Between School Loyalty and Math Score",
+    x = "School Loyalty",
+    y = "Mean Math Score"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    strip.text = element_text(face = "bold", size = 11)
+  )
+
+
+# Analyze the relationship between perceived threat of harm and math score,
+# grouped by socioeconomic status. Visualized using faceted scatter plots 
+# with linear trends and confidence intervals.
+
+# Group and summarize by threat of harm and socio_economy
+threat_score_summary <- clean_df %>%
+  filter(!is.na(score), !is.na(T_1036_Di), !is.na(socio_economy)) %>%
+  group_by(T_1036_Di, socio_economy) %>%
+  summarise(mean_score = mean(score), .groups = "drop") %>%
+  arrange(T_1036_Di)
+
+# Add a column with labeled socioeconomic group for faceting
+threat_score_summary <- threat_score_summary %>%
+  mutate(
+    socio_label = socio_labels[as.character(socio_economy)],
+    socio_label = factor(socio_label, levels = c(
+      "High Socioeconomic",
+      "Medium Socioeconomic",
+      "Low Socioeconomic"
+    ))
+  )
+
+# Plot with confidence interval
+ggplot(threat_score_summary, aes(x = T_1036_Di, y = mean_score)) +
+  geom_point(alpha = 0.6, color = "steelblue") +
+  geom_smooth(method = "lm", se = TRUE, color = "darkred",alpha = 0.2) +
+  facet_wrap(~ socio_label, scales = "fixed") +
+  labs(
+    title = "Relationship Between Threat of Harm and Math Score",
+    x = "Threat of Harm",
+    y = "Mean Math Score"
+  ) +
+  theme_minimal(base_size = 15) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    strip.text = element_text(face = "bold", size = 11)
+  )
+```
+This chunk creates summary indices for school climate by averaging related survey questions, 
+then standardizes these indices and student scores within each socio-economic group and year to enable fair comparisons across schools.
+```{r}
+# Define categories of survey questions to build composite indices
+category_vars <- list(
+  Violence_Index = c("T_Violence", "T_1032_Di", "T_1033_Di", "T_1034_Di", "T_1035_Di",
+                     "T_1036_Di", "T_1037_Di", "T_1038_Di", "T_1039_Di", "T_1040_Di"),
+  EffortViolence_Index = c("T_EffortViolence", "T_1009_Di", "T_1013_Di", "T_1016_Di"),
+  Caring_Index = c("T_Caring", "T_1003_Di", "T_1007_Di", "T_1011_Di", "T_1018_Di"),
+  Atmosphere_Index = c("T_Atmosphere", "T_1001_Di", "T_1010_Rd", "T_1012_Rd", "T_1030_Rd"),
+  Satisfaction_Index = c("T_Satisfaction", "T_1005_Rd", "T_1017_Di", "T_1056_Di"),
+  Feedback_Index = c("T_Feedback", "T_1014_Di", "T_1050_Di", "T_1053_Di", "T_1054_Di", "T_1055_Di", "T_1059_Di")
+)
+
+# Calculate average index scores for each row (school) based on defined question
+climate_df <- math_df %>%
+  rowwise() %>%
+  mutate(
+    Violence_Index = mean(c_across(all_of(category_vars$Violence_Index)), na.rm = TRUE),
+    EffortViolence_Index = mean(c_across(all_of(category_vars$EffortViolence_Index)), na.rm = TRUE),
+    Caring_Index = mean(c_across(all_of(category_vars$Caring_Index)), na.rm = TRUE),
+    Atmosphere_Index = mean(c_across(all_of(category_vars$Atmosphere_Index)), na.rm = TRUE),
+    Satisfaction_Index = mean(c_across(all_of(category_vars$Satisfaction_Index)), na.rm = TRUE),
+    Feedback_Index = mean(c_across(all_of(category_vars$Feedback_Index)), na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  # Keep only the new index columns
+  select(Violence_Index, EffortViolence_Index, Caring_Index,
+         Atmosphere_Index, Satisfaction_Index, Feedback_Index)
+
+# Clean the math_df by:
+# - Removing all raw student survey response columns (those starting with "T_")
+# - Appending the previously calculated climate indices for each school
+math_df_cleaned <- math_df %>%
+  select(-matches("^T_")) %>%          
+  bind_cols(climate_df)              
+
+
+
+# Define the numeric variables that will be standardized (z-scored)
+vars_to_scale <- c(
+  "score", "Violence_Index", "EffortViolence_Index",
+  "Caring_Index", "Atmosphere_Index", 
+  "Satisfaction_Index",
+  "Feedback_Index"
+)
+
+# Define columns to keep
+columns_to_keep <- c(
+  "score",
+  "Violence_Index",
+  "EffortViolence_Index",
+  "Caring_Index",
+  "Atmosphere_Index",
+  "Satisfaction_Index",
+  "Feedback_Index"
+)
+
+# Normalize each variable (z-score) within each year and socio-economic group
+# This ensures fair comparison across time and demographic contexts
+math_df_scaled <- math_df_cleaned %>%
+  group_by(year, socio_economy) %>%
+  mutate(across(all_of(vars_to_scale), ~ (.-mean(., na.rm=TRUE)) / sd(., na.rm=TRUE))) %>%
+  ungroup()
+
+# Remove any rows that still contain missing values after normalization
+math_df_scaled <- na.omit(math_df_scaled)
+```
+
+This chunk calculates all pairwise correlations between the score and climate indices, then visualizes them using a heatmap.
+```{r}
+# Select relevant columns and remove NAs
+cor_data <- math_df_scaled %>%
+  select(all_of(columns_to_keep)) %>%
+  drop_na()
+
+# Compute correlation matrix
+cor_matrix <- cor(cor_data, use = "complete.obs")
+
+# Melt matrix to long format
+cor_long <- melt(cor_matrix, varnames = c("Var1", "Var2"))
+
+# Keep only lower triangle
+cor_long <- cor_long %>%
+  mutate(order1 = as.numeric(factor(Var1, levels = colnames(cor_matrix))),
+         order2 = as.numeric(factor(Var2, levels = colnames(cor_matrix)))) %>%
+  filter(order1 > order2)
+
+# Plot heatmap
+ggplot(cor_long, aes(x = Var2, y = Var1, fill = value)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(value, 2)), size = 4) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white",
+                       midpoint = 0, limit = c(-1, 1), name = "Correlation") +
+  theme_minimal() +
+  labs(
+    title = "Correlation Heatmap",
+    x = NULL,
+    y = NULL
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+```{r}
+# Define columns to keep
+columns_to_keep <- c(
+  "score",
+  "Violence_Index",
+  "EffortViolence_Index",
+  "Caring_Index",
+  "Atmosphere_Index",
+  "Satisfaction_Index"
+)
+
+# Select relevant columns and remove NAs
+cor_data <- math_df_scaled %>%
+  select(all_of(columns_to_keep)) %>%
+  drop_na()
+
+# Compute correlation matrix
+cor_matrix <- cor(cor_data, use = "complete.obs")
+
+# Melt matrix to long format
+cor_long <- melt(cor_matrix, varnames = c("Var1", "Var2"))
+
+# Keep only lower triangle
+cor_long <- cor_long %>%
+  mutate(order1 = as.numeric(factor(Var1, levels = colnames(cor_matrix))),
+         order2 = as.numeric(factor(Var2, levels = colnames(cor_matrix)))) %>%
+  filter(order1 > order2)
+
+# Plot heatmap
+ggplot(cor_long, aes(x = Var2, y = Var1, fill = value)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(value, 2)), size = 4) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white",
+                       midpoint = 0, limit = c(-1, 1), name = "Correlation") +
+  theme_minimal() +
+  labs(
+    title = "Correlation Heatmap - Feedback_Index removed",
+    x = NULL,
+    y = NULL
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+# Split into three separate data frames by socio_economy
+low_df_scaled  <- math_df_scaled %>% filter(socio_economy == "3") %>% select(all_of(columns_to_keep))
+mid_df_scaled  <- math_df_scaled %>% filter(socio_economy == "2") %>% select(all_of(columns_to_keep))
+high_df_scaled <- math_df_scaled %>% filter(socio_economy == "1") %>% select(all_of(columns_to_keep))
+```
+
+This chunk defines a function to train and evaluate a linear regression model using k-fold cross-validation. 
+It uses a recipe-based workflow and returns performance metrics: RMSE, R², and MAE.
+```{r}
+cv_train_and_evaluate <- function(data, folds = 5) {
+  set.seed(123)
+  
+  # Cross-validation folds
+  cv_folds <- vfold_cv(data, v = folds)
+  
+  # Recipe
+  recipe_spec <- recipe(score ~ ., data = data)
+  
+  # Linear model
+  lm_model <- linear_reg() %>% set_engine("lm")
+  
+  # Workflow
+  model_workflow <- workflow() %>%
+    add_recipe(recipe_spec) %>%
+    add_model(lm_model)
+  
+  # Fit with correct metric functions from yardstick
+  results <- fit_resamples(
+    model_workflow,
+    resamples = cv_folds,
+    metrics = yardstick::metric_set(yardstick::rmse, yardstick::rsq, yardstick::mae),
+    control = control_resamples(save_pred = TRUE)
+  )
+  
+  # Collect performance metrics
+  metrics <- collect_metrics(results)
+  return(metrics)
+}
+```
+
+```{r}
+# Run for each group
+low_metrics  <- cv_train_and_evaluate(low_df_scaled)  %>% mutate(group = "Low")
+mid_metrics  <- cv_train_and_evaluate(mid_df_scaled)  %>% mutate(group = "Mid")
+high_metrics <- cv_train_and_evaluate(high_df_scaled) %>% mutate(group = "High")
+
+# Combine results
+cv_results <- bind_rows(low_metrics, mid_metrics, high_metrics)
+
+# View results
+cv_results
+```
+This chunk defines a function that uses bootstrap resampling to estimate the mean and 95% confidence intervals of linear model coefficients,
+providing a robust summary of their stability and variability.
+```{r}
+bootstrap_coefficients <- function(data, n_boot = 1000, seed = 123) {
+  set.seed(seed)
+  
+  # Get formula and variables
+  model_formula <- score ~ .
+  
+  # Bootstrap resamples
+  boot_resamples <- bootstraps(data, times = n_boot)
+  
+  # Fit linear model and extract coefficients for each bootstrap sample
+  coef_results <- boot_resamples %>%
+    mutate(
+      model = map(splits, ~ lm(model_formula, data = analysis(.x))),
+      coefs = map(model, tidy)
+    ) %>%
+    select(coefs) %>%
+    unnest(coefs)
+  
+  # Summarize: mean and 95% CI
+  summary <- coef_results %>%
+    group_by(term) %>%
+    summarise(
+      Mean = mean(estimate, na.rm = TRUE),
+      Lower_CI = quantile(estimate, 0.025, na.rm = TRUE),
+      Upper_CI = quantile(estimate, 0.975, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  return(summary)
+}
+```
+
+```{r}
+low_bootstrap_summary <- bootstrap_coefficients(low_df_scaled)
+mid_bootstrap_summary <- bootstrap_coefficients(mid_df_scaled)
+high_bootstrap_summary <- bootstrap_coefficients(high_df_scaled)
+```
+
+```{r}
+plot_bootstrap_coefs <- function(coef_summary, group_label = "Group") {
+  # Select top 10 variables by absolute mean
+  top_coefs <- coef_summary %>%
+    filter(term != "(Intercept)") %>%
+    arrange(desc(abs(Mean))) %>%
+    slice(1:10) %>%
+    mutate(
+      term = fct_reorder(term, Mean),
+      hjust_val = ifelse(Mean > 0, 0, 1),
+      nudge_x = ifelse(Mean > 0, 0.02, -0.02)
+    )
+
+  ggplot(top_coefs, aes(x = Mean, y = term, fill = Mean)) +
+    geom_col() +
+    geom_errorbar(aes(xmin = Lower_CI, xmax = Upper_CI), width = 0.2) +
+    geom_text(
+      aes(label = round(Mean, 2)),
+      hjust = top_coefs$hjust_val,
+      nudge_x = top_coefs$nudge_x,
+      nudge_y = 0.3,
+      size = 3.5,
+      color = "black"
+    ) +
+    scale_fill_gradient2(
+      low = "indianred3",
+      mid = "white",
+      high = "mediumpurple3",
+      midpoint = 0
+    ) +
+    labs(
+      title = paste("Linear Regression Coefficients (95% CI) –", group_label),
+      x = "Bootstrap Coefficient",
+      y = "Variable"
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "none",
+      axis.text.y = element_text(size = 14),  # Y-axis (variable names)
+      axis.text.x = element_text(size = 12),  # X-axis (tick numbers)
+      axis.title = element_text(size = 14),   # Axis titles
+      plot.title = element_text(size = 12, face = "bold")  # Plot title
+    )
+}
+```
+```{r}
+plot_bootstrap_coefs(high_bootstrap_summary, group_label = "High Socio-Economic")
+plot_bootstrap_coefs(mid_bootstrap_summary, group_label = "Mid Socio-Economic")
+plot_bootstrap_coefs(low_bootstrap_summary, group_label = "Low Socio-Economic")
+```
+
+
+```{r}
+# Add SES_Group to each summary
+low_summary <- low_bootstrap_summary %>% mutate(SES_Group = "Low")
+mid_summary <- mid_bootstrap_summary %>% mutate(SES_Group = "Mid")
+high_summary <- high_bootstrap_summary %>% mutate(SES_Group = "High")
+
+# Combine all into one dataframe
+combined_summary <- bind_rows(low_summary, mid_summary, high_summary)
+
+# Make SES_Group an ordered factor
+combined_summary$SES_Group <- factor(combined_summary$SES_Group, levels = c("Low", "Mid", "High"))
+
+
+
+# Fixed color per socio group
+color_map_fixed <- c(
+  "Low" = "firebrick2",
+  "Mid" = "mediumpurple3",
+  "High" = "forestgreen"
+)
+
+# Sort by average mean across groups
+term_order <- combined_summary %>%
+  group_by(term) %>%
+  summarise(avg_mean = mean(Mean, na.rm = TRUE)) %>%
+  arrange(desc(-avg_mean)) %>%
+  pull(term)
+
+combined_summary$SES_Group <- factor(combined_summary$SES_Group, levels = c("Low","Mid","High"))
+
+combined_summary$term <- factor(combined_summary$term, levels = term_order)
+
+
+# Plot
+p_fixed <- ggplot(combined_summary, aes(x = Mean, y = term, fill = SES_Group)) +
+  geom_col(width = 0.6, position = position_dodge(width = 0.8)) +
+  geom_errorbar(
+    aes(xmin = Lower_CI, xmax = Upper_CI),
+    width = 0.2,
+    position = position_dodge(width = 0.8)
+  ) +
+  geom_text(
+    aes(label = round(Mean, 2), group = SES_Group),
+    position = position_dodge(width = 0.8),
+    hjust = ifelse(combined_summary$Mean >= 0, -0.1, 1.1),
+    vjust = -0.6,
+    size = 4
+  ) +
+  scale_fill_manual(
+    name = "SES Group",
+    values = color_map_fixed
+  ) +
+  labs(
+    title = "Linear Regression Coeffients",
+    x = "Mean Coefficient",
+    y = "Variable"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+  legend.position = "bottom",
+  plot.background = element_rect(fill = "white", color = NA),
+  axis.text.y = element_text(size = 14),      # Make y-axis labels bigger
+  axis.text.x = element_text(size = 12),      # Optional: adjust x-axis tick size
+  axis.title = element_text(size = 14),       # Axis titles
+  plot.title = element_text(size = 16, face = "bold")  # Title styling
+  )
+
+# Show plot
+print(p_fixed)
+
+```
+
+
